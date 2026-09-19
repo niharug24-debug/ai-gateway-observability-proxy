@@ -1,0 +1,79 @@
+version: '3.8'
+
+services:
+  # In-Memory Cache and Distributed State
+  redis:
+    image: redis:7-alpine
+    container_name: ai_gateway_redis
+    restart: always
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # Persistent Storage for Audit Logs and Metrics
+  postgres:
+    image: postgres:16-alpine
+    container_name: ai_gateway_postgres
+    restart: always
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-gateway_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-gateway_secret_password}
+      POSTGRES_DB: ${POSTGRES_DB:-ai_gateway_db}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-gateway_user} -d ${POSTGRES_DB:-ai_gateway_db}"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # High-Performance FastAPI AI Gateway & Proxy
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: ai_gateway_backend
+    restart: always
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    environment:
+      - ENVIRONMENT=production
+      - PORT=8000
+      - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER:-gateway_user}:${POSTGRES_PASSWORD:-gateway_secret_password}@postgres:5432/${POSTGRES_DB:-ai_gateway_db}
+      - REDIS_URL=redis://redis:6379/0
+      - UPSTREAM_OPENAI_BASE_URL=${UPSTREAM_OPENAI_BASE_URL:-https://api.openai.com/v1}
+      - UPSTREAM_API_KEY=${UPSTREAM_API_KEY:-}
+      - CACHE_TTL_SECONDS=${CACHE_TTL_SECONDS:-86400}
+      - PII_REDACTION_ENABLED=${PII_REDACTION_ENABLED:-true}
+    ports:
+      - "8000:8000"
+
+  # Next.js 14 Observability Dashboard
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: ai_gateway_frontend
+    restart: always
+    depends_on:
+      - backend
+    environment:
+      - NEXT_PUBLIC_API_BASE_URL=http://localhost:8000
+    ports:
+      - "3000:3000"
+
+volumes:
+  redis_data:
+  postgres_data:
